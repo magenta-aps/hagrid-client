@@ -1,6 +1,4 @@
-===============================
-hagrid-client - Password Client
-===============================
+# hagrid-client - Password Client
 hagrid-client is a development client for interacting wiht the hagrid server,
 via the exposed REST API. Functionality is very limited.
 
