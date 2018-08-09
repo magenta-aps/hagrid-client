@@ -36,7 +36,11 @@ optional arguments:
   -v, --verbose         Verbosity of the output.
 ```
 
-Usage scenario, first store a password:
+Usage scenario, first create a user (assumes a private key is found in `~/.ssh/id_rsa`:
+```
+$ ./client.py -u emil -p password1 --create-user
+```
+Then store a password:
 ```
 $ ./client.py -u emil -p password1 --store-password '{"username": "Skeen", "password": "password2", "title": "Github Login", "url": "https://github.com/"}'
 ```

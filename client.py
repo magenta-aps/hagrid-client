@@ -97,6 +97,20 @@ def load_private_key(path, password):
         return private_key, public_key
 
 
+def create_user(args, public_key):
+    payload = {
+        'username': args.username,
+        'password': args.password,
+        'public_key': stringify_public_key(public_key),
+    }
+    response = requests.post(
+        'http://' + args.url + '/api/user/',
+        json=payload
+    )
+    print response
+    print response.text
+
+
 def list_passwords(args):
     response = requests.get(
         'http://' + args.url + '/api/keyentry/',
@@ -271,6 +285,12 @@ def main():
     """Populate db according to arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        '-c', '--create-user',
+        help='Create a user using the provided username + password.',
+        action='store_true',
+        default=False
+    )
+    parser.add_argument(
         '-l', '--list-passwords',
         help='List all passwords associated to the user.',
         action='store_true',
@@ -342,10 +362,15 @@ def main():
 
     verbose_print(args, 2, "Loading private key from: " + args.private_key)
 
+    # TODO: Gen new key statement here?
+
     private_key, public_key = load_private_key(
         path=args.private_key,
         password=args.private_key_password
     )
+
+    if args.create_user:
+        create_user(args, public_key)
 
     verbose_print(args, 3, "Private key loading successful")
 
