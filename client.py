@@ -5,6 +5,10 @@ import base64
 import requests
 import sys
 import json
+import logging
+logger = logging.getLogger('hagrid-client')
+logger.addHandler(logging.StreamHandler())
+logger.setLevel(logging.INFO)
 
 from os.path import expanduser
 
@@ -12,6 +16,89 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
+
+
+def username_to_pk(args, username, return_dict=False):
+    """Translate a username into a primary key."""
+    response = requests.get(
+        'http://' + args.url + '/api/user/?username=' + username,
+        auth=(args.username, args.password)
+    )
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
+        return
+
+    if response.status_code != 200:
+        logger.error("Non 200 return code.")
+        return
+    
+    json = response.json()
+    if json['count'] == 0:
+        logger.info("No such user found.")
+        return
+    elif json['count'] > 1:
+        logger.error("Multiple users found, invariant broken!")
+        return
+
+    user_dict = json['results'][0]
+    if return_dict:
+        return user_dict
+    return user_dict['pk']
+
+
+def groupname_to_pk(args, groupname, return_dict=False):
+    response = requests.get(
+        'http://' + args.url + '/api/group/?name=' + groupname,
+        auth=(args.username, args.password)
+    )
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
+        return
+
+    if response.status_code != 200:
+        logger.error("Non 200 return code.")
+        return
+
+    json = response.json()
+    if json['count'] == 0:
+        logger.info("No groups found.")
+        return
+    elif json['count'] > 1:
+        logger.error("Multiple groups found, invariant broken!")
+        return
+
+    # Prepare group
+    group_dict = json['results'][0]
+    if return_dict:
+        return group_dict
+    return group_dict['pk']
+
+
+
+
+def create_user(args, public_key):
+    """Create a new user."""
+    payload = {
+        'username': args.username,
+        'password': args.password,
+        'public_key': stringify_public_key(public_key),
+    }
+    response = requests.post(
+        'http://' + args.url + '/api/user/',
+        json=payload
+    )
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
+        return
+
+    if response.status_code != 201:
+        logger.error("Non 201 return code.")
+        return
+
+    json = response.json()
+    if 'pk' in json:
+        logger.info("User created!")
+        return json['pk']
 
 
 def parse_key(key):
@@ -97,101 +184,209 @@ def load_private_key(path, password):
         return private_key, public_key
 
 
-def create_user(args, public_key):
+def create_group(args):
+    """Create a new group."""
+    if args.group is None:
+        logger.error("No group provided!")
+        return
+
     payload = {
-        'username': args.username,
-        'password': args.password,
-        'public_key': stringify_public_key(public_key),
+        'name': args.group,
     }
     response = requests.post(
-        'http://' + args.url + '/api/user/',
-        json=payload
+        'http://' + args.url + '/api/group/',
+        json=payload,
+        auth=(args.username, args.password)
     )
-    print response
-    print response.text
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
+        return
+
+    if response.status_code != 201:
+        logger.error("Non 201 return code.")
+        return
+
+    json = response.json()
+    if 'pk' in json:
+        logger.info("Group created!")
+        return json['pk']
+
+
+def associate_user(args):
+    """Create a new group."""
+    if args.group is None:
+        logger.error("No group provided!")
+        return
+    if args.associate_user is None:
+        logger.error("No associate username provided!")
+        return
+
+    group_pk = groupname_to_pk(args, args.group)
+    if group_pk is None:
+        return
+
+    associate_user_pk = username_to_pk(args, args.associate_user)
+    if associate_user_pk is None:
+        return
+
+    payload = {
+        'user_pk': associate_user_pk,
+    }
+    response = requests.patch(
+        'http://' + args.url + '/api/group_associate/' + str(group_pk) + "/",
+        json=payload,
+        auth=(args.username, args.password)
+    )
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
+        return
+
+    if response.status_code != 200:
+        logger.error("Non 200 return code.")
+        return
+
+    json = response.json()
+    if 'pk' in json:
+        logger.info("Group association created!")
+        return json['pk']
+
+
+def accumulate(itr, func, initial=0):
+    accum = initial
+    for item in itr:
+        func(accum, item)
+    return accum
+
+
+def download_all_as_list(args, response):
+    json = response.json()
+    listy = json['results']
+    while json['next'] is not None:
+        response = requests.get(
+            json['next'],
+            auth=(args.username, args.password)
+        )
+        json = response.json()
+        listy.extend(json['results'])
+    return listy
+
+
+def list_groups(args):
+    """List all groups visible to the current user."""
+    response = requests.get(
+        'http://' + args.url + '/api/group/',
+        auth=(args.username, args.password)
+    )
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
+        return
+
+    if response.status_code != 200:
+        logger.error("Non 200 return code.")
+        return
+    
+    groups = download_all_as_list(args, response)
+    print "Groups:"
+    
+    for group in groups:
+        group_name = group['name']
+        print "* " + group_name
 
 
 def list_passwords(args):
+    """List all passwords visible to the current user."""
     response = requests.get(
         'http://' + args.url + '/api/keyentry/',
         auth=(args.username, args.password)
     )
-    # TODO: Pull all via 'next'
-    results = response.json()['results']
-    if len(results) != 0:
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
+        return
+
+    if response.status_code != 200:
+        logger.error("Non 200 return code.")
+        return
+
+    passwords = download_all_as_list(args, response)
+
+    if len(passwords) != 0:
         print "Passwords:"
-        for key_entry in results:
-            print "* " + str(key_entry['pk']) + ": " + key_entry['title']
+        
+        def grouper(acc, elem):
+            group_name = elem['owner']['name']
+            if group_name not in acc:
+                acc[group_name] = []
+            acc[group_name].append({'pk': elem['pk'], 'title': elem['title']})
+
+        grouped = accumulate(passwords, grouper, {})
+        for group_name, entries in grouped.iteritems():
+            print "|"
+            print "| " + group_name + ":"
+            # entries = sorted(entries, key=lambda x: int(x['pk']))
+            for entry in entries:
+                print "|--- " + str(entry['pk']) + ": " + entry['title']
     else:
         print "No passwords found!"
 
 
 def get_password(args, my_private_key, my_public_key, key_entry_pk):
+    """Retrieve a password from the database using an ID."""
+    my_public_key_pk = get_public_key_pk(args, my_public_key)
+
     response = requests.get(
-        'http://' + args.url + '/api/keyentry/',
+        'http://' + args.url + '/api/password/?public_key=' + str(my_public_key_pk) + "&key_entry=" + str(key_entry_pk),
         auth=(args.username, args.password)
     )
-    # TODO: Pull all via 'next'
-    results = response.json()['results']
-    if len(results) == 0:
-        print "Unable to lookup password!"
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
         return
 
-    key_entries = list_dict_search("pk", key_entry_pk, results)
-    if len(key_entries) != 1:
-        print "Unable to lookup password!"
+    if response.status_code != 200:
+        logger.error("Non 200 return code.")
         return
 
-    key_entry = key_entries[0]
-    my_public_key_pk = get_public_key_pk(args, my_public_key)
-    passwords = [x for x in key_entry['passwords'] if x['public_key']['pk'] == my_public_key_pk]
-    if len(passwords) != 1:
-        print "Database invariant broken!"
+    json = response.json()
+    if json['count'] == 0:
+        logger.info("No such password found.")
+        return
+    elif json['count'] > 1:
+        logger.error("Multiple passwords found, invariant broken!")
         return
 
     # We have the password object, and thus the password
-    password = passwords[0]
+    password = json['results'][0]
     incoming_encoded_password = password['password']
     incoming_encrypted_password = base64.b64decode(incoming_encoded_password)
     incoming_password = decrypt(my_private_key, incoming_encrypted_password)
 
     # Print information to the user
-    print "Found password:"
-    print "- " + "title: " + key_entry['title']
-    print "- " + "url: " + key_entry['url']
-    print "- " + "notes: " + key_entry['notes']
-    print "- " + "username: " + key_entry['username']
-    print "- " + "password: " + incoming_password
+    print "Found password: '" + incoming_password + "'"
 
 
 def get_public_key_pk(args, my_public_key):
-    verbose_print(args, 3, "Finding our own user pk")
-    response = requests.get(
-        'http://' + args.url + '/api/user/',
-        auth=(args.username, args.password)
-    )
-    # TODO: Pull all via 'next'
-    # TODO: Lookup using filter
-    results = response.json()['results']
-    # Find personal group via name
-    user_dict = list_dict_search("username", args.username, results)[0]
-    user_pk = user_dict['pk']
-    verbose_print(args, 3, "Found our own user pk: " + str(user_pk))
+    """Get our public key pk of the current key."""
+    user_pk = username_to_pk(args, args.username)
+    logger.debug("Found our own user pk: " + str(user_pk))
 
-    # Gather all public keys related to the group
-    verbose_print(args, 3, "Finding our own public key pk")
     response = requests.get(
-        'http://' + args.url + '/api/public_key/',
+        'http://' + args.url + '/api/public_key/?user=' + str(user_pk),
         auth=(args.username, args.password)
     )
-    # TODO: Pull all via 'next'
-    # TODO: Lookup using filter
-    results = response.json()['results']
-    # TODO: This only works if database keys has no comments (fix or strip database comments)
-    user_keys = list_dict_search("user", user_pk, results)
+    if response.status_code == 403:
+        logger.error("Bad authentification information.")
+        return
+
+    if response.status_code != 200:
+        logger.error("Non 200 return code.")
+        return
+
+    public_keys = download_all_as_list(args, response)
+
+    # TODO: This only works if public keys are stripped of comments
     my_public_key_string = stringify_public_key(my_public_key)
-    my_public_key_pk = list_dict_search("key", my_public_key_string, user_keys)[0]['pk']
-    verbose_print(args, 3, "Found our own public key pk: " + str(my_public_key_pk))
+    my_public_key_pk = list_dict_search("key", my_public_key_string, public_keys)[0]['pk']
+
+    logger.debug("Found our own public key pk: " + str(my_public_key_pk))
     return my_public_key_pk
 
 
@@ -200,42 +395,36 @@ def list_dict_search(key, value, list_of_dicts):
 
 
 def store_password(args, my_private_key, my_public_key, store_dict):
-    verbose_print(args, 3, "Finding group users")
-    response = requests.get(
-        'http://' + args.url + '/api/group/',
-        auth=(args.username, args.password)
-    )
-    # TODO: Pull all via 'next'
-    # TODO: Lookup using filter
-    results = response.json()['results']
-    # Find personal group via name
-    group_dict = list_dict_search("name", args.username, results)[0]
+    """Store a password on the server."""
+    # The password we are actually saving
+    if 'password' not in store_dict:
+        logger.error("Password not provided!")
+        return
+    password = str(store_dict['password'])
+
+    group_name = args.group or args.username
+    # Prepare group
+    group_dict = groupname_to_pk(args, group_name, return_dict=True)
+    if group_dict is None:
+        return
     group_pk = group_dict['pk']
     users = [user['pk'] for user in group_dict['user_set']]
     # Always include master user
     users.append(1)
-    verbose_print(args, 3, "Found users: " + str(users))
+    logger.debug("Found users: " + str(users))
 
+    # Pull out the signing key
+    signing_key_pk = get_public_key_pk(args, my_public_key)
 
     # Gather all public keys related to the group
-    verbose_print(args, 3, "Gathering public keys")
+    # TODO: Lookup using filter (user__in=users, or user__group=group_pk)
     response = requests.get(
         'http://' + args.url + '/api/public_key/',
         auth=(args.username, args.password)
     )
-    # TODO: Pull all via 'next'
-    # TODO: Lookup using filter
-    results = response.json()['results']
+    results = download_all_as_list(args, response)
     public_keys = [public_key for public_key in results if public_key['user'] in users]
-    verbose_print(args, 3, "Found public keys: " + str([x['pk'] for x in public_keys]))
-    # Pull out the signing key
-    signing_key_pk = get_public_key_pk(args, my_public_key)
-
-    # The password we are actually saving
-    if 'password' not in store_dict:
-        verbose_print(args, 0, "password not provided!")
-        return
-    password = str(store_dict['password'])
+    logger.debug("Found public keys: " + str([x['pk'] for x in public_keys]))
 
     # Prepare the passwords write object
     passwords_write = []
@@ -248,8 +437,8 @@ def store_password(args, my_private_key, my_public_key, store_dict):
         encoded_password = base64.b64encode(encrypted_password)
         encoded_signature = base64.b64encode(signature)
 
-        verbose_print(args, 4, "Encoded Password: " + encoded_password)
-        verbose_print(args, 4, "Encoded Signature: " + encoded_signature)
+        logger.debug("Encoded Password: " + encoded_password)
+        logger.debug("Encoded Signature: " + encoded_signature)
 
         passwords_write.append({
             'key_pk': public_key['pk'],
@@ -257,14 +446,11 @@ def store_password(args, my_private_key, my_public_key, store_dict):
             'signature': encoded_signature,
         })
 
-    def load_or_blank(key):
-        if key in store_dict:
-            return store_dict[key]
-        return ""
+    load_or_blank = lambda key: store_dict[key] if key in store_dict else ""
 
     # Prepare our payload object
     payload = {
-        "owner": group_pk,
+        "owner_write": group_pk,
         "url": load_or_blank('url'),
         "passwords_write": passwords_write,
         "title": load_or_blank('title'),
@@ -277,16 +463,28 @@ def store_password(args, my_private_key, my_public_key, store_dict):
         auth=(args.username, args.password),
         json=payload
     )
-    print response
-    print response.text
+    if response.status_code != 201:
+        logger.error("Non 201 return code.")
+        return
+
+    json = response.json()
+    if 'pk' in json:
+        logger.info("Password created!")
+        return json['pk']
 
 
 def main():
     """Populate db according to arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '-c', '--create-user',
+        '-cu', '--create-user',
         help='Create a user using the provided username + password.',
+        action='store_true',
+        default=False
+    )
+    parser.add_argument(
+        '-cg', '--create-group',
+        help='Create a group using the provided username + password.',
         action='store_true',
         default=False
     )
@@ -297,7 +495,13 @@ def main():
         default=False
     )
     parser.add_argument(
-        '-g', '--get-password',
+        '-lg', '--list-groups',
+        help='List all groups associated to the user.',
+        action='store_true',
+        default=False
+    )
+    parser.add_argument(
+        '-pw', '--get-password',
         help='Get a password by providing its primary key.',
         action='store',
         type=int,
@@ -310,7 +514,7 @@ def main():
         default=None
     )
     parser.add_argument(
-        '-a', '--url',
+        '--url',
         help='The url of the server.',
         action='store',
         default='localhost:8000'
@@ -324,6 +528,18 @@ def main():
     parser.add_argument(
         '-p', '--password',
         help='The password used to log into the server.',
+        action='store',
+        default=None
+    )
+    parser.add_argument(
+        '-g', '--group',
+        help='The group to store passwords under.',
+        action='store',
+        default=None
+    )
+    parser.add_argument(
+        '-a', '--associate_user',
+        help='The user to associate to a provided group.',
         action='store',
         default=None
     )
@@ -348,19 +564,18 @@ def main():
     args = parser.parse_args()
 
     if args.username is None:
-        verbose_print(args, 0, "Username must be provided!")
+        logger.error("Username must be provided!")
         sys.exit(1)
 
     if args.password is None:
-        verbose_print(args, 0, "Password must be provided!")
+        logger.error("Password must be provided!")
         sys.exit(1)
 
     if args.verbose > 4:
-        verbose_print(args, 1, "Verbosity limited can max be 4")
+        logger.warning("Verbosity limited can max be 4")
 
-    verbose_print(args, 3, "Commandline arguments: " + str(args))
-
-    verbose_print(args, 2, "Loading private key from: " + args.private_key)
+    logger.debug("Commandline arguments: " + str(args))
+    logger.debug("Loading private key from: " + args.private_key)
 
     # TODO: Gen new key statement here?
 
@@ -372,18 +587,27 @@ def main():
     if args.create_user:
         create_user(args, public_key)
 
-    verbose_print(args, 3, "Private key loading successful")
+    logger.debug("Private key loading successful")
+
+    if args.create_group:
+        create_group(args)
+
+    if args.list_groups:
+        list_groups(args)
 
     if args.list_passwords:
         list_passwords(args)
 
-    if args.store_password is not None:
-        store_dict = json.loads(args.store_password)
-        store_password(args, private_key, public_key, store_dict)
+    if args.associate_user:
+        associate_user(args)
 
     if args.get_password is not None:
         # Parse get_password into python dict
         get_password(args, private_key, public_key, args.get_password)
+
+    if args.store_password is not None:
+        store_dict = json.loads(args.store_password)
+        store_password(args, private_key, public_key, store_dict)
 
 if __name__ == "__main__":
     main()
